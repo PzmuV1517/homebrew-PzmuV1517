@@ -1,0 +1,78 @@
+name: Update Pusher Formula
+
+on:
+  repository_dispatch:
+    types: [pusher-release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to process'
+        required: false
+        type: string
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get release information
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get the latest release from PzmuV1517/Pusher
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          elif [ "${{ github.event.action }}" = "pusher-release" ]; then
+            TAG="${{ github.event.client_payload.tag }}"
+          else
+            TAG=$(gh release list --repo PzmuV1517/Pusher --limit 1 --json tagName --jq '.[0].tagName')
+          fi
+          
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          
+          # Get release body
+          RELEASE_BODY=$(gh release view "$TAG" --repo PzmuV1517/Pusher --json body --jq '.body')
+          echo "Release body:"
+          echo "$RELEASE_BODY"
+          
+          # Extract URL, SHA256, and VERSION from the ruby block in release body
+          URL=$(echo "$RELEASE_BODY" | grep -oP 'url\s+"https://github.com/[^"]+\.tar\.gz"' | grep -oP 'https://[^"]+')
+          SHA256=$(echo "$RELEASE_BODY" | grep -oP 'sha256\s+"[a-f0-9]{64}"' | grep -oP '[a-f0-9]{64}')
+          VERSION=$(echo "$RELEASE_BODY" | grep -oP 'version\s+"[^"]+"' | grep -oP '"[^"]+"' | tr -d '"')
+          
+          echo "Extracted values:"
+          echo "URL: $URL"
+          echo "SHA256: $SHA256"
+          echo "VERSION: $VERSION"
+          
+          echo "URL=$URL" >> $GITHUB_OUTPUT
+          echo "SHA256=$SHA256" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update pusher.rb formula
+        run: |
+          # Update the formula file
+          sed -i "s|url \".*\"|url \"${{ steps.release.outputs.URL }}\"|g" Formula/pusher.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${{ steps.release.outputs.SHA256 }}\"|g" Formula/pusher.rb
+          sed -i "s|version \".*\"|version \"${{ steps.release.outputs.VERSION }}\"|g" Formula/pusher.rb
+          
+          echo "Updated Formula/pusher.rb:"
+          cat Formula/pusher.rb
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/pusher.rb
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update pusher formula to version ${{ steps.release.outputs.VERSION }}"
+            git push
+          fi
